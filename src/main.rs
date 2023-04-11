@@ -1,8 +1,6 @@
 use image::{RgbImage, Rgb, ImageBuffer, GenericImage};
 use image::io::Reader as ImageReader;
-
-//#[derive(Debug, Clone, Copy)]
-//struct QuadTree<Lu, Ru, Ld, Rd>(Lu, Ru, Ld, Rd);
+use clap::Parser;
 
 type Img = ImageBuffer<Rgb<u8>, Vec<u8>>;
 
@@ -23,6 +21,21 @@ fn average(img: &Img) -> Rgb<u8> {
     ])
 }
 
+fn average_n(img: &Img) -> usize {
+    let avr = average(img);
+    let mut diff = 0;
+
+    for p in img.pixels() {
+        diff += (
+            (p[0] as i32-avr[0] as i32).pow(2)+
+            (p[1] as i32-avr[1] as i32).pow(2)+
+            (p[2] as i32-avr[2] as i32).pow(2)
+        ) as usize;
+    }
+
+    diff
+}
+
 #[derive(Debug, Clone)]
 enum QuadTree {
     Leaf(Rgb<u8>),
@@ -30,11 +43,11 @@ enum QuadTree {
 }
 
 impl QuadTree {
-    fn draw_full(&self, img: &mut Img) {
-        self.draw(img, 0, 0, img.width(), img.height())
+    fn draw_full(&self, img: &mut Img, lines: bool) {
+        self.draw(img, 0, 0, img.width(), img.height(), lines)
     }
 
-    fn draw(&self, img: &mut Img, x: u32, y: u32, width: u32, height: u32) {
+    fn draw(&self, img: &mut Img, x: u32, y: u32, width: u32, height: u32, lines: bool) {
         match self {
             QuadTree::Leaf(rgb) => {
                 for y in y..y+height {
@@ -44,26 +57,42 @@ impl QuadTree {
                 }
             }
             QuadTree::Node(children) => {
+                if width == 1 || height == 1 {
+                    QuadTree::Leaf(Rgb([255, 0, 255])).draw_full(img, false);
+                    return;
+                }
+
                 let w = width/2;
                 let h = height/2;
+                let wo = width%2;
+                let ho = height%2;
 
-                children[0].draw(img, x, y, w, h);
-                children[1].draw(img, x+w, y, w, h);
-                children[2].draw(img, x, y+h, w, h);
-                children[3].draw(img, x+w, y+h, w, h);
+                if lines {
+                    children[0].draw(img, x, y, w-1, h-1, lines);
+                    children[1].draw(img, x+w, y, w+wo-1, h-1, lines);
+                    children[2].draw(img, x, y+h, w-1, h+ho-1, lines);
+                    children[3].draw(img, x+w, y+h, w+wo-1, h+ho-1, lines);
+                } else {
+                    children[0].draw(img, x, y, w, h, lines);
+                    children[1].draw(img, x+w, y, w+wo, h, lines);
+                    children[2].draw(img, x, y+h, w, h+ho, lines);
+                    children[3].draw(img, x+w, y+h, w+wo, h+ho, lines);
+                }
             }
         }
     }
-}
 
-impl From<(Img, usize)> for QuadTree {
-    fn from((mut img, i): (Img, usize)) -> QuadTree {
+    fn from_img(mut img: Img, detail: usize) -> QuadTree {
+        if img.width() == 1 || img.height() == 1 {
+            return QuadTree::Leaf(average(&img));
+        }
+
         let lu = img.sub_image(0, 0, img.width()/2, img.height()/2).to_image();
         let ru = img.sub_image(img.width()/2, 0, img.width()/2, img.height()/2).to_image();
         let ld = img.sub_image(0, img.height()/2, img.width()/2, img.height()/2).to_image();
         let rd = img.sub_image(img.width()/2, img.height()/2, img.width()/2, img.height()/2).to_image();
 
-        if i == 0 {
+        if average_n(&img) < detail.pow(2) {
             QuadTree::Node(Box::new([
                 QuadTree::Leaf(average(&lu)),
                 QuadTree::Leaf(average(&ru)),
@@ -72,26 +101,33 @@ impl From<(Img, usize)> for QuadTree {
             ]))
         } else {
             QuadTree::Node(Box::new([
-                QuadTree::from((lu, i-1)),
-                QuadTree::from((ru, i-1)),
-                QuadTree::from((ld, i-1)),
-                QuadTree::from((rd, i-1)),
+                QuadTree::from_img(lu, detail),
+                QuadTree::from_img(ru, detail),
+                QuadTree::from_img(ld, detail),
+                QuadTree::from_img(rd, detail),
             ]))
         }
     }
 }
 
-fn main() {
-    let src = ImageReader::open("CuteCat.jpg").unwrap().decode().unwrap().to_rgb8();
-    let mut img = RgbImage::new(src.width(), src.height());
-
-    let tree = QuadTree::from((src, 5));
-    tree.draw_full(&mut img);
-
-    img.save("img.png").unwrap();
+#[derive(Parser)]
+struct Args {
+    #[arg(short, long, required=true)]
+    filename: String,
+    #[arg(short, long, required=true)]
+    detail: usize,
+    #[arg(short, long)]
+    lines: bool,
 }
 
-#[allow(unused)]
-fn type_of<T>(_: &T) -> &str {
-    std::any::type_name::<T>()
+fn main() {
+    let args = Args::parse();
+
+    let src = ImageReader::open(args.filename).unwrap().decode().unwrap().to_rgb8();
+    let mut img = RgbImage::new(src.width(), src.height());
+
+    let tree = QuadTree::from_img(src, args.detail);
+    tree.draw_full(&mut img, args.lines);
+
+    img.save("img.png").unwrap();
 }
